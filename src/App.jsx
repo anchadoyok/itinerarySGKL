@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CheckSquare,
   Coins,
+  EyeOff,
   MapPin,
   Pencil,
   Plus,
@@ -20,6 +21,12 @@ import { DEFAULT_RATES } from "./data/seed";
 import Modal from "./components/Modal";
 import ActivityEditor from "./components/ActivityEditor";
 import ParticipantEditor from "./components/ParticipantEditor";
+import MetaEditor from "./components/MetaEditor";
+import DayHeaderEditor from "./components/DayHeaderEditor";
+import ChecklistItemEditor from "./components/ChecklistItemEditor";
+import PhaseEditor from "./components/PhaseEditor";
+import BudgetItemEditor from "./components/BudgetItemEditor";
+import BudgetSummaryEditor from "./components/BudgetSummaryEditor";
 
 const CATEGORY_STYLES = {
   Transport: "bg-gray-100 text-gray-700",
@@ -37,33 +44,54 @@ const TABS = [
   { id: "setting", label: "Setting", icon: Settings2 },
 ];
 
+const MONTH_MAP = {
+  jan: 0, feb: 1, mar: 2, apr: 3, mei: 4, may: 4, jun: 5, jul: 6,
+  agu: 7, agt: 7, aug: 7, sep: 8, okt: 9, oct: 9, nov: 10, des: 11, dec: 11,
+};
+
+function parseDate(text) {
+  if (!text) return null;
+  const m = text.match(/(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/);
+  if (!m) return null;
+  const day = Number(m[1]);
+  const month = MONTH_MAP[m[2].slice(0, 3).toLowerCase()];
+  const year = Number(m[3]);
+  if (month === undefined) return null;
+  return new Date(year, month, day);
+}
+
+function isElapsed(dateText) {
+  const d = parseDate(dateText);
+  if (!d) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return d.getTime() < today.getTime();
+}
+
 function formatRupiah(value) {
   return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(value || 0);
 }
-
 function formatNumber(value) {
   return new Intl.NumberFormat("id-ID", { maximumFractionDigits: 0 }).format(value || 0);
 }
-
 function formatActivityCost(value, currency) {
   if (!value) return currency === "IDR" ? "Rp 0" : currency === "SGD" ? "SGD 0" : "RM 0";
   if (currency === "IDR") return `Rp ${formatNumber(value)}`;
   if (currency === "SGD") return `SGD ${formatNumber(value)}`;
   return `RM ${formatNumber(value)}`;
 }
-
 function convertToIdr(amount, currency, rates) {
   if (!amount) return 0;
   if (currency === "SGD") return amount * (rates.sgdToIdr || 0);
   if (currency === "MYR") return amount * (rates.myrToIdr || 0);
   return amount;
 }
-
 function vibrateLight() {
   if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") navigator.vibrate(10);
 }
 
 export default function SGKLItineraryApp() {
+  const itin = useItinerary();
   const {
     data: ITINERARY,
     appState,
@@ -71,18 +99,38 @@ export default function SGKLItineraryApp() {
     loading,
     exists,
     seed,
+    updateMeta,
+    updateDay,
     updateActivity,
     addActivity,
     deleteActivity,
     updateParticipant,
-  } = useItinerary();
+    updateChecklistItem,
+    addChecklistItem,
+    deleteChecklistItem,
+    renamePhase,
+    addPhase,
+    deletePhase,
+    updateBudgetItem,
+    addBudgetItem,
+    deleteBudgetItem,
+    updateBudgetSummary,
+  } = itin;
   const [activeTab, setActiveTab] = useState("itinerary");
   const [dayFilter, setDayFilter] = useState("Semua");
   const [shareReady] = useState(typeof navigator !== "undefined" && typeof navigator.share === "function");
   const [seeding, setSeeding] = useState(false);
   const [editMode, setEditMode] = useState(false);
-  const [activityEditor, setActivityEditor] = useState(null); // { dayIndex, activityIndex, activity, isNew }
-  const [participantEditor, setParticipantEditor] = useState(null); // { index, participant }
+
+  // modal states
+  const [activityEditor, setActivityEditor] = useState(null);
+  const [participantEditor, setParticipantEditor] = useState(null);
+  const [metaEditorOpen, setMetaEditorOpen] = useState(false);
+  const [dayEditor, setDayEditor] = useState(null); // { dayIndex, day }
+  const [checklistEditor, setChecklistEditor] = useState(null); // { phase, item, isNew }
+  const [phaseEditor, setPhaseEditor] = useState(null); // { name, isNew }
+  const [budgetEditor, setBudgetEditor] = useState(null); // { section, index, row, isNew }
+  const [summaryEditorOpen, setSummaryEditorOpen] = useState(false);
 
   if (loading) {
     return (
@@ -110,12 +158,8 @@ export default function SGKLItineraryApp() {
           <p className="mt-2 text-sm text-[#8B7355]">
             Klik di bawah untuk mengisi itinerary awal (template SG-KL Okt 2026). Cuma sekali.
           </p>
-          <button
-            type="button"
-            onClick={handleSeed}
-            disabled={seeding}
-            className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#5C3A2E] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#3D2817] disabled:opacity-50"
-          >
+          <button type="button" onClick={handleSeed} disabled={seeding}
+            className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#5C3A2E] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#3D2817] disabled:opacity-50">
             {seeding ? "Mengisi…" : "Isi data awal"}
           </button>
         </div>
@@ -137,7 +181,10 @@ export default function SGKLItineraryApp() {
     result[person.kamar].push(person);
     return result;
   }, {});
-  const visibleDays = dayFilter === "Semua" ? ITINERARY.days : ITINERARY.days.filter((day) => day.day === dayFilter);
+
+  const hideElapsed = !!appState.hideElapsedDays;
+  const filteredDays = ITINERARY.days.filter((d) => !hideElapsed || !isElapsed(d.date));
+  const visibleDays = dayFilter === "Semua" ? filteredDays : filteredDays.filter((day) => day.day === dayFilter);
   const tripDurationDays = ITINERARY.days.filter((day) => /^H\d+$/.test(day.day)).length;
   const checklistDone = allChecklistItems.filter((item) => appState.checkedChecklist[item.id]).length;
 
@@ -145,17 +192,17 @@ export default function SGKLItineraryApp() {
     vibrateLight();
     setAppState((prev) => ({ ...prev, checkedActivities: { ...prev.checkedActivities, [activityId]: !prev.checkedActivities[activityId] } }));
   };
-
   const toggleChecklist = (itemId) => {
     vibrateLight();
     setAppState((prev) => ({ ...prev, checkedChecklist: { ...prev.checkedChecklist, [itemId]: !prev.checkedChecklist[itemId] } }));
   };
-
   const handleRateChange = (key, value) => {
     const numericValue = Number(String(value).replace(/[^\d]/g, ""));
     setAppState((prev) => ({ ...prev, rates: { ...prev.rates, [key]: Number.isNaN(numericValue) ? 0 : numericValue } }));
   };
-
+  const toggleHideElapsed = () => {
+    setAppState((prev) => ({ ...prev, hideElapsedDays: !prev.hideElapsedDays }));
+  };
   const handleDayFilter = (value) => {
     setDayFilter(value);
     if (typeof window === "undefined") return;
@@ -165,100 +212,125 @@ export default function SGKLItineraryApp() {
       if (element) element.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   };
-
   const handleReset = () => {
     if (!window.confirm("Reset semua progres itinerary dan checklist?")) return;
     setAppState((prev) => ({ ...prev, checkedActivities: {}, checkedChecklist: {} }));
   };
-
   const handleShare = async () => {
     if (!shareReady) return;
     try {
-      await navigator.share({
-        title: ITINERARY.meta.title,
-        text: "Itinerary keluarga Singapura dan Kuala Lumpur 15–21 Oktober 2026",
-        url: window.location.href,
-      });
-    } catch {
-      /* dismissed */
-    }
+      await navigator.share({ title: ITINERARY.meta.title, text: "Itinerary keluarga", url: window.location.href });
+    } catch { /* dismissed */ }
   };
 
-  const openActivityEditor = (dayIndex, activityIndex) => {
-    const activity = ITINERARY.days[dayIndex].activities[activityIndex];
-    setActivityEditor({ dayIndex, activityIndex, activity, isNew: false });
-  };
-
-  const openNewActivityEditor = (dayIndex) => {
-    setActivityEditor({
-      dayIndex,
-      activityIndex: -1,
-      activity: { time: "", name: "", category: "Wisata", detail: "", est: 0, actual: 0, currency: "MYR", mapUrl: "" },
-      isNew: true,
-    });
-  };
-
+  // ----- handlers for editors -----
   const handleSaveActivity = async (form) => {
-    if (!activityEditor) return;
     const { dayIndex, activityIndex, isNew } = activityEditor;
     try {
-      if (isNew) {
-        await addActivity(dayIndex, form);
-      } else {
-        await updateActivity(dayIndex, activityIndex, form);
-      }
+      if (isNew) await addActivity(dayIndex, form);
+      else await updateActivity(dayIndex, activityIndex, form);
       setActivityEditor(null);
-    } catch (err) {
-      alert("Gagal simpan: " + err.message);
-    }
+    } catch (err) { alert("Gagal: " + err.message); }
   };
-
   const handleDeleteActivity = async () => {
-    if (!activityEditor) return;
     try {
       await deleteActivity(activityEditor.dayIndex, activityEditor.activityIndex);
       setActivityEditor(null);
-    } catch (err) {
-      alert("Gagal hapus: " + err.message);
-    }
+    } catch (err) { alert("Gagal: " + err.message); }
   };
-
   const handleSaveParticipant = async (form) => {
-    if (!participantEditor) return;
     try {
       await updateParticipant(participantEditor.index, form);
       setParticipantEditor(null);
-    } catch (err) {
-      alert("Gagal simpan: " + err.message);
-    }
+    } catch (err) { alert("Gagal: " + err.message); }
+  };
+  const handleSaveMeta = async (form) => {
+    try { await updateMeta(form); setMetaEditorOpen(false); }
+    catch (err) { alert("Gagal: " + err.message); }
+  };
+  const handleSaveDay = async (form) => {
+    try {
+      await updateDay(dayEditor.dayIndex, form);
+      setDayEditor(null);
+    } catch (err) { alert("Gagal: " + err.message); }
+  };
+  const handleSaveChecklistItem = async (form) => {
+    const { phase, item, isNew } = checklistEditor;
+    try {
+      if (isNew) await addChecklistItem(phase, form);
+      else await updateChecklistItem(phase, item.id, form);
+      setChecklistEditor(null);
+    } catch (err) { alert("Gagal: " + err.message); }
+  };
+  const handleDeleteChecklistItem = async () => {
+    try {
+      await deleteChecklistItem(checklistEditor.phase, checklistEditor.item.id);
+      setChecklistEditor(null);
+    } catch (err) { alert("Gagal: " + err.message); }
+  };
+  const handleSavePhase = async (newName) => {
+    const { name, isNew } = phaseEditor;
+    try {
+      if (isNew) await addPhase(newName);
+      else await renamePhase(name, newName);
+      setPhaseEditor(null);
+    } catch (err) { alert("Gagal: " + err.message); }
+  };
+  const handleDeletePhase = async () => {
+    try { await deletePhase(phaseEditor.name); setPhaseEditor(null); }
+    catch (err) { alert("Gagal: " + err.message); }
+  };
+  const handleSaveBudgetItem = async (form) => {
+    const { section, index, isNew } = budgetEditor;
+    try {
+      if (isNew) await addBudgetItem(section, form);
+      else await updateBudgetItem(section, index, form);
+      setBudgetEditor(null);
+    } catch (err) { alert("Gagal: " + err.message); }
+  };
+  const handleDeleteBudgetItem = async () => {
+    try {
+      await deleteBudgetItem(budgetEditor.section, budgetEditor.index);
+      setBudgetEditor(null);
+    } catch (err) { alert("Gagal: " + err.message); }
+  };
+  const handleSaveSummary = async (form) => {
+    try { await updateBudgetSummary(form); setSummaryEditorOpen(false); }
+    catch (err) { alert("Gagal: " + err.message); }
   };
 
+  // ----- renderers -----
   const renderItineraryTab = () => (
     <section className="space-y-4" id="itinerary-top">
       <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
-        {["Semua", ...ITINERARY.days.map((day) => day.day)].map((pill) => (
-          <button
-            key={pill}
-            type="button"
-            onClick={() => handleDayFilter(pill)}
+        {["Semua", ...filteredDays.map((day) => day.day)].map((pill) => (
+          <button key={pill} type="button" onClick={() => handleDayFilter(pill)}
             className={`shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition duration-200 ${
-              dayFilter === pill
-                ? "border-[#5C3A2E] bg-[#5C3A2E] text-white"
-                : "border-[#E5D9C8] bg-[#FFF8DC] text-[#5C3A2E]"
-            }`}
-          >
+              dayFilter === pill ? "border-[#5C3A2E] bg-[#5C3A2E] text-white" : "border-[#E5D9C8] bg-[#FFF8DC] text-[#5C3A2E]"
+            }`}>
             {pill}
           </button>
         ))}
       </div>
+      {hideElapsed && filteredDays.length < ITINERARY.days.length ? (
+        <p className="text-xs text-[#8B7355]">
+          {ITINERARY.days.length - filteredDays.length} hari yang sudah lewat disembunyikan. Bisa diubah di Setting.
+        </p>
+      ) : null}
       <div className="space-y-4">
         {visibleDays.map((day) => {
           const dayIndex = ITINERARY.days.findIndex((d) => d.id === day.id);
           return (
             <article key={day.id} id={`day-card-${day.day}`} className="overflow-hidden rounded-2xl border border-[#E5D9C8] bg-white shadow-sm">
-              <div className="flex items-start justify-between gap-3 bg-[#5C3A2E] px-4 py-3 text-white">
+              <div
+                onClick={() => editMode && setDayEditor({ dayIndex, day })}
+                className={`flex items-start justify-between gap-3 bg-[#5C3A2E] px-4 py-3 text-white ${editMode ? "cursor-pointer" : ""}`}
+              >
                 <h3 className="text-base font-semibold">{day.day} · {day.dayName}, {day.date}</h3>
-                <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium">{day.location}</span>
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-medium">{day.location}</span>
+                  {editMode ? <Pencil className="h-3.5 w-3.5" /> : null}
+                </div>
               </div>
               <div className="border-b border-[#F0E7DA] bg-[#FFF8DC] px-4 py-3 text-sm text-[#5C3A2E]">
                 <span className="mr-2">💡</span>{day.tagline}
@@ -280,19 +352,16 @@ export default function SGKLItineraryApp() {
                       const isChecked = Boolean(appState.checkedActivities[activity.id]);
                       const handleRowClick = () => {
                         if (editMode) {
-                          openActivityEditor(dayIndex, activityIndex);
+                          setActivityEditor({ dayIndex, activityIndex, activity, isNew: false });
                         } else {
                           toggleActivity(activity.id);
                         }
                       };
                       return (
-                        <tr
-                          key={activity.id}
-                          onClick={handleRowClick}
+                        <tr key={activity.id} onClick={handleRowClick}
                           className={`cursor-pointer border-t border-[#F3ECE1] align-top transition duration-200 ${
                             isChecked && !editMode ? "opacity-50 line-through" : "hover:bg-[#FCF8F1]"
-                          }`}
-                        >
+                          }`}>
                           <td className="px-3 py-3">
                             <div className="flex justify-center">
                               <div className={`flex h-5 w-5 items-center justify-center rounded border ${isChecked ? "border-[#059669] bg-[#059669] text-white" : "border-[#D6C6B2] bg-white text-transparent"}`}>
@@ -306,14 +375,7 @@ export default function SGKLItineraryApp() {
                               <div className="flex items-center gap-1.5">
                                 <p className="text-sm font-medium text-[#3D2817]">{activity.name}</p>
                                 {activity.mapUrl ? (
-                                  <a
-                                    href={activity.mapUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="text-[#A67B5B]"
-                                    title="Buka di Maps"
-                                  >
+                                  <a href={activity.mapUrl} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-[#A67B5B]" title="Buka di Maps">
                                     <MapPin className="h-3.5 w-3.5" />
                                   </a>
                                 ) : null}
@@ -326,15 +388,9 @@ export default function SGKLItineraryApp() {
                           </td>
                           <td className="px-3 py-3 text-sm">
                             <p className="font-semibold text-[#5C3A2E]">{formatActivityCost(activity.est, activity.currency)}</p>
-                            {activity.actual ? (
-                              <p className="mt-0.5 text-xs text-[#059669]">{formatActivityCost(activity.actual, activity.currency)}</p>
-                            ) : null}
+                            {activity.actual ? <p className="mt-0.5 text-xs text-[#059669]">{formatActivityCost(activity.actual, activity.currency)}</p> : null}
                           </td>
-                          {editMode ? (
-                            <td className="px-3 py-3">
-                              <Pencil className="h-4 w-4 text-[#A67B5B]" />
-                            </td>
-                          ) : null}
+                          {editMode ? <td className="px-3 py-3"><Pencil className="h-4 w-4 text-[#A67B5B]" /></td> : null}
                         </tr>
                       );
                     })}
@@ -343,11 +399,9 @@ export default function SGKLItineraryApp() {
               </div>
               {editMode ? (
                 <div className="border-t border-[#F0E7DA] bg-[#FBF6EF] px-4 py-3">
-                  <button
-                    type="button"
-                    onClick={() => openNewActivityEditor(dayIndex)}
-                    className="inline-flex items-center gap-2 rounded-full border border-[#D9C9B5] bg-white px-3 py-2 text-sm font-medium text-[#5C3A2E] transition hover:bg-[#F5EBDD]"
-                  >
+                  <button type="button"
+                    onClick={() => setActivityEditor({ dayIndex, activityIndex: -1, activity: { time: "", name: "", category: "Wisata", detail: "", est: 0, actual: 0, currency: "MYR", mapUrl: "" }, isNew: true })}
+                    className="inline-flex items-center gap-2 rounded-full border border-[#D9C9B5] bg-white px-3 py-2 text-sm font-medium text-[#5C3A2E]">
                     <Plus className="h-4 w-4" />Tambah aktivitas
                   </button>
                 </div>
@@ -368,13 +422,9 @@ export default function SGKLItineraryApp() {
     <section className="space-y-4">
       <div className="grid gap-3">
         {ITINERARY.peserta.map((person, index) => (
-          <article
-            key={person.kode}
+          <article key={person.kode}
             onClick={() => editMode && setParticipantEditor({ index, participant: person })}
-            className={`rounded-2xl border border-[#E5D9C8] bg-white p-4 shadow-sm transition ${
-              editMode ? "cursor-pointer hover:border-[#A67B5B]" : ""
-            }`}
-          >
+            className={`rounded-2xl border border-[#E5D9C8] bg-white p-4 shadow-sm transition ${editMode ? "cursor-pointer hover:border-[#A67B5B]" : ""}`}>
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="mb-2 inline-flex rounded-full bg-[#FBF2E7] px-3 py-1 text-xs font-semibold text-[#A67B5B]">Peserta {person.kode}</div>
@@ -419,23 +469,33 @@ export default function SGKLItineraryApp() {
         const progress = items.length ? (doneCount / items.length) * 100 : 0;
         return (
           <article key={phase} className="rounded-2xl border border-[#E5D9C8] bg-white p-4 shadow-sm">
-            <h3 className="text-base font-semibold text-[#3D2817]">{phase}</h3>
-            <p className="text-sm text-[#8B7355]">{doneCount}/{items.length} selesai</p>
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex-1">
+                <h3 className="text-base font-semibold text-[#3D2817]">{phase}</h3>
+                <p className="text-sm text-[#8B7355]">{doneCount}/{items.length} selesai</p>
+              </div>
+              {editMode ? (
+                <button type="button" onClick={() => setPhaseEditor({ name: phase, isNew: false })}
+                  className="rounded-full border border-[#D9C9B5] bg-white px-2 py-1 text-xs text-[#5C3A2E]">
+                  <Pencil className="inline h-3 w-3" /> Fase
+                </button>
+              ) : null}
+            </div>
             <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#F0E7DA]">
               <div className="h-full rounded-full bg-[#A67B5B] transition-all duration-200" style={{ width: `${progress}%` }} />
             </div>
             <div className="mt-4 space-y-2">
               {items.map((item) => {
                 const isChecked = Boolean(appState.checkedChecklist[item.id]);
+                const handleClick = () => {
+                  if (editMode) setChecklistEditor({ phase, item, isNew: false });
+                  else toggleChecklist(item.id);
+                };
                 return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => toggleChecklist(item.id)}
+                  <button key={item.id} type="button" onClick={handleClick}
                     className={`flex w-full items-start gap-3 rounded-2xl border px-3 py-3 text-left transition duration-200 ${
-                      isChecked ? "border-[#D8EADF] bg-[#F3FBF7] opacity-60 line-through" : "border-[#F0E7DA] bg-[#FCFAF6]"
-                    }`}
-                  >
+                      isChecked && !editMode ? "border-[#D8EADF] bg-[#F3FBF7] opacity-60 line-through" : "border-[#F0E7DA] bg-[#FCFAF6]"
+                    }`}>
                     <div className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border ${isChecked ? "border-[#059669] bg-[#059669] text-white" : "border-[#D6C6B2] bg-white text-transparent"}`}>
                       <CheckCircle2 className="h-3.5 w-3.5" />
                     </div>
@@ -449,17 +509,32 @@ export default function SGKLItineraryApp() {
                         ) : null}
                       </div>
                     </div>
+                    {editMode ? <Pencil className="h-4 w-4 text-[#A67B5B]" /> : null}
                   </button>
                 );
               })}
             </div>
+            {editMode ? (
+              <button type="button"
+                onClick={() => setChecklistEditor({ phase, item: { text: "", critical: false }, isNew: true })}
+                className="mt-3 inline-flex items-center gap-2 rounded-full border border-[#D9C9B5] bg-white px-3 py-2 text-sm text-[#5C3A2E]">
+                <Plus className="h-4 w-4" />Tambah item
+              </button>
+            ) : null}
           </article>
         );
       })}
+      {editMode ? (
+        <button type="button"
+          onClick={() => setPhaseEditor({ name: "", isNew: true })}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-[#D9C9B5] bg-white px-4 py-3 text-sm font-medium text-[#5C3A2E]">
+          <Plus className="h-4 w-4" />Tambah fase baru
+        </button>
+      ) : null}
     </section>
   );
 
-  const renderBudgetTable = (title, items) => (
+  const renderBudgetTable = (title, items, section) => (
     <article className="rounded-2xl border border-[#E5D9C8] bg-white p-4 shadow-sm">
       <h3 className="text-base font-semibold text-[#3D2817]">{title}</h3>
       <div className="mt-4 overflow-x-auto">
@@ -469,41 +544,59 @@ export default function SGKLItineraryApp() {
               <th className="px-0 py-3">Item</th>
               <th className="px-3 py-3">Per Orang</th>
               <th className="px-3 py-3">Catatan</th>
+              {editMode ? <th className="w-10 px-3 py-3"></th> : null}
             </tr>
           </thead>
           <tbody>
-            {items.map((row) => (
-              <tr key={row.item} className="border-b border-[#F7F1E8] last:border-b-0">
+            {items.map((row, index) => (
+              <tr key={`${section}-${index}`}
+                onClick={() => editMode && setBudgetEditor({ section, index, row, isNew: false })}
+                className={`border-b border-[#F7F1E8] last:border-b-0 ${editMode ? "cursor-pointer hover:bg-[#FCF8F1]" : ""}`}>
                 <td className="px-0 py-3 text-sm font-medium text-[#3D2817]">{row.item}</td>
                 <td className="px-3 py-3 text-sm font-semibold text-[#5C3A2E]">{formatRupiah(row.perOrang)}</td>
                 <td className="px-3 py-3 text-sm text-[#8B7355]">{row.catatan}</td>
+                {editMode ? <td className="px-3 py-3"><Pencil className="h-4 w-4 text-[#A67B5B]" /></td> : null}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {editMode ? (
+        <button type="button"
+          onClick={() => setBudgetEditor({ section, index: -1, row: { item: "", perOrang: 0, catatan: "" }, isNew: true })}
+          className="mt-3 inline-flex items-center gap-2 rounded-full border border-[#D9C9B5] bg-white px-3 py-2 text-sm text-[#5C3A2E]">
+          <Plus className="h-4 w-4" />Tambah item
+        </button>
+      ) : null}
     </article>
   );
 
   const renderBudgetTab = () => {
-    const difference = ITINERARY.budget.summary.target - ITINERARY.budget.summary.totalSixPeople;
+    const summary = ITINERARY.budget.summary || {};
+    const difference = (summary.target || 0) - (summary.totalSixPeople || 0);
     return (
       <section className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="rounded-2xl border border-[#E5D9C8] bg-white p-4 shadow-sm">
             <p className="text-sm text-[#8B7355]">Total per orang</p>
-            <p className="mt-2 text-lg font-semibold text-[#3D2817]">{formatRupiah(ITINERARY.budget.summary.totalPerOrang)}</p>
+            <p className="mt-2 text-lg font-semibold text-[#3D2817]">{formatRupiah(summary.totalPerOrang)}</p>
           </div>
           <div className="rounded-2xl border border-[#E5D9C8] bg-white p-4 shadow-sm">
             <p className="text-sm text-[#8B7355]">Total 6 orang</p>
-            <p className="mt-2 text-lg font-semibold text-[#3D2817]">{formatRupiah(ITINERARY.budget.summary.totalSixPeople)}</p>
+            <p className="mt-2 text-lg font-semibold text-[#3D2817]">{formatRupiah(summary.totalSixPeople)}</p>
           </div>
           <div className="rounded-2xl border border-[#E5D9C8] bg-white p-4 shadow-sm">
             <p className="text-sm text-[#8B7355]">Target</p>
-            <p className="mt-2 text-lg font-semibold text-[#3D2817]">{formatRupiah(ITINERARY.budget.summary.target)}</p>
+            <p className="mt-2 text-lg font-semibold text-[#3D2817]">{formatRupiah(summary.target)}</p>
             <p className="mt-1 text-sm text-[#059669]">Selisih {formatRupiah(difference)}</p>
           </div>
         </div>
+        {editMode ? (
+          <button type="button" onClick={() => setSummaryEditorOpen(true)}
+            className="inline-flex items-center gap-2 rounded-full border border-[#D9C9B5] bg-white px-4 py-2 text-sm font-medium text-[#5C3A2E]">
+            <Pencil className="h-4 w-4" />Edit angka summary
+          </button>
+        ) : null}
         <div className="rounded-2xl border border-[#E5D9C8] bg-white p-4 shadow-sm">
           <p className="text-sm font-semibold text-[#3D2817]">Aktual terpakai (dari aktivitas)</p>
           <p className="mt-2 text-2xl font-bold text-[#059669]">{formatRupiah(totalActualIdr)}</p>
@@ -514,18 +607,18 @@ export default function SGKLItineraryApp() {
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <div className="rounded-2xl bg-[#FBF6EF] p-4">
               <p className="text-sm text-[#8B7355]">D / E / F</p>
-              <p className="mt-1 text-lg font-semibold text-[#5C3A2E]">{formatRupiah(ITINERARY.budget.summary.flatDEF)}/orang</p>
+              <p className="mt-1 text-lg font-semibold text-[#5C3A2E]">{formatRupiah(summary.flatDEF)}/orang</p>
               <p className="mt-1 text-sm text-[#8B7355]">Skema flat</p>
             </div>
             <div className="rounded-2xl bg-[#FBF6EF] p-4">
               <p className="text-sm text-[#8B7355]">A / B / C</p>
-              <p className="mt-1 text-lg font-semibold text-[#5C3A2E]">~{formatRupiah(ITINERARY.budget.summary.abcShare)}/orang</p>
+              <p className="mt-1 text-lg font-semibold text-[#5C3A2E]">~{formatRupiah(summary.abcShare)}/orang</p>
               <p className="mt-1 text-sm text-[#8B7355]">Menutup subsidi rombongan</p>
             </div>
           </div>
         </div>
-        {renderBudgetTable("Singapura", ITINERARY.budget.sg)}
-        {renderBudgetTable("Kuala Lumpur", ITINERARY.budget.kl)}
+        {renderBudgetTable("Singapura", ITINERARY.budget.sg || [], "sg")}
+        {renderBudgetTable("Kuala Lumpur", ITINERARY.budget.kl || [], "kl")}
         <p className="text-xs text-[#8B7355]">Belanja personal & kereta Malang-JKT tidak termasuk.</p>
       </section>
     );
@@ -534,12 +627,30 @@ export default function SGKLItineraryApp() {
   const renderSettingTab = () => (
     <section className="space-y-4">
       <article className="rounded-2xl border border-[#E5D9C8] bg-white p-4 shadow-sm">
+        <h3 className="text-base font-semibold text-[#3D2817]">Tampilan</h3>
+        <button type="button" onClick={toggleHideElapsed}
+          className={`mt-3 inline-flex w-full items-center justify-between rounded-2xl border px-4 py-3 transition ${
+            hideElapsed ? "border-[#5C3A2E] bg-[#FBF6EF]" : "border-[#E5D9C8] bg-white"
+          }`}>
+          <span className="flex items-center gap-2 text-sm font-medium text-[#5C3A2E]">
+            <EyeOff className="h-4 w-4" />Sembunyikan hari yang sudah lewat
+          </span>
+          <span className={`rounded-full px-2 py-0.5 text-xs ${hideElapsed ? "bg-[#5C3A2E] text-white" : "bg-[#F0E7DA] text-[#8B7355]"}`}>
+            {hideElapsed ? "ON" : "OFF"}
+          </span>
+        </button>
+        <p className="mt-2 text-xs text-[#8B7355]">
+          Hari yang tanggalnya sudah lewat (sebelum hari ini) tidak akan muncul di tab Itinerary.
+        </p>
+      </article>
+
+      <article className="rounded-2xl border border-[#E5D9C8] bg-white p-4 shadow-sm">
         <div className="flex items-start gap-3">
           <Coins className="mt-0.5 h-5 w-5 text-[#A67B5B]" />
           <div>
             <h3 className="text-base font-semibold text-[#3D2817]">Kurs manual</h3>
             <p className="mt-1 text-sm leading-6 text-[#8B7355]">
-              Nilai awal diisi dari kurs referensi {DEFAULT_RATES.sourceDate}. Ubah sewaktu-waktu agar hitungan <em>Sisa Estimasi</em> & <em>Aktual</em> tetap relevan.
+              Nilai awal dari kurs referensi {DEFAULT_RATES.sourceDate}. Ubah agar hitungan tetap relevan.
             </p>
           </div>
         </div>
@@ -551,13 +662,9 @@ export default function SGKLItineraryApp() {
             <label className="block text-xs font-semibold uppercase tracking-wide text-[#8B7355]">1 SGD</label>
             <div className="mt-2 flex items-center gap-3">
               <span className="text-sm font-medium text-[#5C3A2E]">Rp</span>
-              <input
-                type="number"
-                inputMode="numeric"
-                value={appState.rates.sgdToIdr}
+              <input type="number" inputMode="numeric" value={appState.rates.sgdToIdr}
                 onChange={(event) => handleRateChange("sgdToIdr", event.target.value)}
-                className="w-full rounded-xl border border-[#D9C9B5] bg-white px-3 py-2 text-base font-semibold text-[#3D2817] outline-none transition duration-150 focus:border-[#A67B5B]"
-              />
+                className="w-full rounded-xl border border-[#D9C9B5] bg-white px-3 py-2 text-base font-semibold text-[#3D2817] outline-none transition duration-150 focus:border-[#A67B5B]" />
             </div>
           </div>
         </div>
@@ -567,13 +674,9 @@ export default function SGKLItineraryApp() {
             <label className="block text-xs font-semibold uppercase tracking-wide text-[#8B7355]">1 MYR</label>
             <div className="mt-2 flex items-center gap-3">
               <span className="text-sm font-medium text-[#5C3A2E]">Rp</span>
-              <input
-                type="number"
-                inputMode="numeric"
-                value={appState.rates.myrToIdr}
+              <input type="number" inputMode="numeric" value={appState.rates.myrToIdr}
                 onChange={(event) => handleRateChange("myrToIdr", event.target.value)}
-                className="w-full rounded-xl border border-[#D9C9B5] bg-white px-3 py-2 text-base font-semibold text-[#3D2817] outline-none transition duration-150 focus:border-[#A67B5B]"
-              />
+                className="w-full rounded-xl border border-[#D9C9B5] bg-white px-3 py-2 text-base font-semibold text-[#3D2817] outline-none transition duration-150 focus:border-[#A67B5B]" />
             </div>
           </div>
         </div>
@@ -598,30 +701,36 @@ export default function SGKLItineraryApp() {
     <div className="min-h-screen bg-[#F5EFE6] text-[#3D2817]">
       <div className="mx-auto max-w-[600px] px-3 py-3 sm:px-4">
         <header className="sticky top-0 z-30 -mx-3 border-b border-[#E5D9C8] bg-[#F5EFE6]/95 px-3 pb-3 pt-2 backdrop-blur sm:-mx-4 sm:px-4">
-          <div className="rounded-3xl border border-[#E5D9C8] bg-white px-4 py-4 shadow-sm">
+          <div
+            onClick={() => editMode && setMetaEditorOpen(true)}
+            className={`rounded-3xl border border-[#E5D9C8] bg-white px-4 py-4 shadow-sm ${editMode ? "cursor-pointer hover:border-[#A67B5B]" : ""}`}
+          >
             <div className="flex items-start justify-between gap-3">
-              <div>
+              <div className="flex-1">
                 <h1 className="text-2xl font-semibold text-[#3D2817]">{ITINERARY.meta.title}</h1>
-                <p className="mt-1 text-sm text-[#8B7355]">15–21 Okt 2026 · 6 Peserta · Rombongan Keluarga</p>
+                <p className="mt-1 text-sm text-[#8B7355]">{ITINERARY.meta.dateRange} · {ITINERARY.meta.travelers}</p>
               </div>
               <button
                 type="button"
-                onClick={() => setEditMode((v) => !v)}
+                onClick={(e) => { e.stopPropagation(); setEditMode((v) => !v); }}
                 className={`shrink-0 rounded-full border px-3 py-2 text-xs font-semibold transition ${
-                  editMode
-                    ? "border-[#5C3A2E] bg-[#5C3A2E] text-white"
-                    : "border-[#D9C9B5] bg-white text-[#5C3A2E]"
+                  editMode ? "border-[#5C3A2E] bg-[#5C3A2E] text-white" : "border-[#D9C9B5] bg-white text-[#5C3A2E]"
                 }`}
                 title="Mode Edit"
               >
-                <Pencil className="inline h-3.5 w-3.5" />
-                {editMode ? " Edit ON" : " Edit"}
+                <Pencil className="inline h-3.5 w-3.5" />{editMode ? " Edit ON" : " Edit"}
               </button>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              <span className="rounded-full bg-[#FBF6EF] px-3 py-1.5 text-xs font-medium text-[#5C3A2E]">Hotel Boss SG</span>
-              <span className="rounded-full bg-[#FBF6EF] px-3 py-1.5 text-xs font-medium text-[#5C3A2E]">Airbnb Bukit Bintang</span>
-              <span className="rounded-full bg-[#FBF6EF] px-3 py-1.5 text-xs font-medium text-[#5C3A2E]">Budget Rp37,35jt</span>
+              {ITINERARY.meta.hotels?.sg ? (
+                <span className="rounded-full bg-[#FBF6EF] px-3 py-1.5 text-xs font-medium text-[#5C3A2E]">{ITINERARY.meta.hotels.sg}</span>
+              ) : null}
+              {ITINERARY.meta.hotels?.kl ? (
+                <span className="rounded-full bg-[#FBF6EF] px-3 py-1.5 text-xs font-medium text-[#5C3A2E]">{ITINERARY.meta.hotels.kl}</span>
+              ) : null}
+              {ITINERARY.meta.budgetTarget ? (
+                <span className="rounded-full bg-[#FBF6EF] px-3 py-1.5 text-xs font-medium text-[#5C3A2E]">Budget {formatRupiah(ITINERARY.meta.budgetTarget)}</span>
+              ) : null}
             </div>
           </div>
         </header>
@@ -653,14 +762,10 @@ export default function SGKLItineraryApp() {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
               return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
+                <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)}
                   className={`rounded-2xl px-2 py-3 text-center text-xs font-semibold transition duration-150 ${
                     isActive ? "bg-[#5C3A2E] text-white shadow-sm" : "bg-[#FBF6EF] text-[#5C3A2E]"
-                  }`}
-                >
+                  }`}>
                   <Icon className="mx-auto mb-1 h-4 w-4" />{tab.label}
                 </button>
               );
@@ -683,19 +788,13 @@ export default function SGKLItineraryApp() {
               {checkedActivityCount}/{totalActivityCount} aktivitas dan {checklistDone}/{allChecklistItems.length} checklist selesai
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={handleReset}
-                className="inline-flex items-center gap-2 rounded-full border border-[#D9C9B5] bg-[#FBF6EF] px-4 py-2 text-sm font-medium text-[#5C3A2E] transition duration-150 hover:bg-[#F5EBDD]"
-              >
+              <button type="button" onClick={handleReset}
+                className="inline-flex items-center gap-2 rounded-full border border-[#D9C9B5] bg-[#FBF6EF] px-4 py-2 text-sm font-medium text-[#5C3A2E] transition duration-150 hover:bg-[#F5EBDD]">
                 <RefreshCcw className="h-4 w-4" />Reset Progress
               </button>
               {shareReady ? (
-                <button
-                  type="button"
-                  onClick={handleShare}
-                  className="inline-flex items-center gap-2 rounded-full border border-[#D9C9B5] bg-white px-4 py-2 text-sm font-medium text-[#5C3A2E] transition duration-150 hover:bg-[#FBF6EF]"
-                >
+                <button type="button" onClick={handleShare}
+                  className="inline-flex items-center gap-2 rounded-full border border-[#D9C9B5] bg-white px-4 py-2 text-sm font-medium text-[#5C3A2E] transition duration-150 hover:bg-[#FBF6EF]">
                   <Share2 className="h-4 w-4" />Bagikan link ini
                 </button>
               ) : null}
@@ -704,32 +803,60 @@ export default function SGKLItineraryApp() {
         </footer>
       </div>
 
-      <Modal
-        open={!!activityEditor}
-        title={activityEditor?.isNew ? "Tambah Aktivitas" : "Edit Aktivitas"}
-        onClose={() => setActivityEditor(null)}
-      >
+      {/* ----- Modals ----- */}
+      <Modal open={!!activityEditor} title={activityEditor?.isNew ? "Tambah Aktivitas" : "Edit Aktivitas"} onClose={() => setActivityEditor(null)}>
         {activityEditor ? (
-          <ActivityEditor
-            activity={activityEditor.activity}
-            onSave={handleSaveActivity}
+          <ActivityEditor activity={activityEditor.activity} onSave={handleSaveActivity}
             onDelete={activityEditor.isNew ? null : handleDeleteActivity}
-            onCancel={() => setActivityEditor(null)}
-          />
+            onCancel={() => setActivityEditor(null)} />
         ) : null}
       </Modal>
 
-      <Modal
-        open={!!participantEditor}
-        title="Edit Peserta"
-        onClose={() => setParticipantEditor(null)}
-      >
+      <Modal open={!!participantEditor} title="Edit Peserta" onClose={() => setParticipantEditor(null)}>
         {participantEditor ? (
-          <ParticipantEditor
-            participant={participantEditor.participant}
-            onSave={handleSaveParticipant}
-            onCancel={() => setParticipantEditor(null)}
-          />
+          <ParticipantEditor participant={participantEditor.participant} onSave={handleSaveParticipant} onCancel={() => setParticipantEditor(null)} />
+        ) : null}
+      </Modal>
+
+      <Modal open={metaEditorOpen} title="Edit Info Trip" onClose={() => setMetaEditorOpen(false)}>
+        {metaEditorOpen ? (
+          <MetaEditor meta={ITINERARY.meta} onSave={handleSaveMeta} onCancel={() => setMetaEditorOpen(false)} />
+        ) : null}
+      </Modal>
+
+      <Modal open={!!dayEditor} title="Edit Hari" onClose={() => setDayEditor(null)}>
+        {dayEditor ? (
+          <DayHeaderEditor day={dayEditor.day} onSave={handleSaveDay} onCancel={() => setDayEditor(null)} />
+        ) : null}
+      </Modal>
+
+      <Modal open={!!checklistEditor} title={checklistEditor?.isNew ? "Tambah Item Checklist" : "Edit Item Checklist"} onClose={() => setChecklistEditor(null)}>
+        {checklistEditor ? (
+          <ChecklistItemEditor item={checklistEditor.item} onSave={handleSaveChecklistItem}
+            onDelete={checklistEditor.isNew ? null : handleDeleteChecklistItem}
+            onCancel={() => setChecklistEditor(null)} />
+        ) : null}
+      </Modal>
+
+      <Modal open={!!phaseEditor} title={phaseEditor?.isNew ? "Tambah Fase" : "Edit Fase"} onClose={() => setPhaseEditor(null)}>
+        {phaseEditor ? (
+          <PhaseEditor name={phaseEditor.name} onSave={handleSavePhase}
+            onDelete={phaseEditor.isNew ? null : handleDeletePhase}
+            onCancel={() => setPhaseEditor(null)} />
+        ) : null}
+      </Modal>
+
+      <Modal open={!!budgetEditor} title={budgetEditor?.isNew ? "Tambah Item Budget" : "Edit Item Budget"} onClose={() => setBudgetEditor(null)}>
+        {budgetEditor ? (
+          <BudgetItemEditor row={budgetEditor.row} onSave={handleSaveBudgetItem}
+            onDelete={budgetEditor.isNew ? null : handleDeleteBudgetItem}
+            onCancel={() => setBudgetEditor(null)} />
+        ) : null}
+      </Modal>
+
+      <Modal open={summaryEditorOpen} title="Edit Summary Budget" onClose={() => setSummaryEditorOpen(false)}>
+        {summaryEditorOpen ? (
+          <BudgetSummaryEditor summary={ITINERARY.budget.summary} onSave={handleSaveSummary} onCancel={() => setSummaryEditorOpen(false)} />
         ) : null}
       </Modal>
     </div>
