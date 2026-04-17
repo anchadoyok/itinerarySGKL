@@ -1,45 +1,35 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import {
-  getRedirectResult,
-  onAuthStateChanged,
-  signInWithPopup,
-  signInWithRedirect,
-  signOut,
-} from "firebase/auth";
-import { auth, googleProvider } from "../lib/firebase";
+import { onAuthStateChanged, signInAnonymously } from "firebase/auth";
+import { auth } from "../lib/firebase";
 
 const AuthContext = createContext(null);
-
-// Mobile / non-localhost: pakai redirect (popup sering diblokir browser HP)
-const isMobileLike =
-  typeof window !== "undefined" &&
-  (/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ||
-    !["localhost", "127.0.0.1"].includes(window.location.hostname));
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    // Selesaikan redirect login kalau ada
-    getRedirectResult(auth).catch((err) => {
-      console.error("Redirect login error:", err);
-    });
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setLoading(false);
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (u) {
+        setUser(u);
+        setLoading(false);
+      } else {
+        try {
+          await signInAnonymously(auth);
+          // onAuthStateChanged akan dipanggil lagi dengan user baru
+        } catch (err) {
+          console.error("Anonymous auth failed:", err);
+          setError(err);
+          setLoading(false);
+        }
+      }
     });
     return () => unsub();
   }, []);
 
-  const login = () =>
-    isMobileLike
-      ? signInWithRedirect(auth, googleProvider)
-      : signInWithPopup(auth, googleProvider);
-  const logout = () => signOut(auth);
-
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, error }}>
       {children}
     </AuthContext.Provider>
   );
